@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Grid World</title>
+    <style>
+        :root { --cell-size: 60px; }
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; background: #f0f2f5; }
+        #grid { display: grid; gap: 2px; margin-top: 20px; background: #ccc; border: 2px solid #333; }
+        .cell { width: var(--cell-size); height: var(--cell-size); background: white; 
+                display: flex; flex-direction: column; align-items: center; justify-content: center; 
+                cursor: pointer; font-size: 12px; position: relative; }
+        .cell.start { background: #4CAF50 !important; color: white; }
+        .cell.end { background: #f44336 !important; color: white; }
+        .cell.wall { background: #808080 !important; color: white; }
+        .arrow { font-size: 20px; font-weight: bold; }
+        .controls { margin-top: 20px; padding: 20px; background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body>
+    <h2>Grid World</h2>
+    <div class="controls">
+        N: <input type="number" id="nVal" value="5" min="5" max="9">
+        <button onclick="initGrid()">初始化地圖</button>
+        <span id="status">目前選取：設定起點 (綠色)</span>
+        <button onclick="sendData()">計算價值評估 V(s)</button>
+    </div>
+
+    <div id="grid"></div>
+
+<script>
+        let n, start = null, end = null, walls = [], mode = 'start';
+        let isLocked = false;
+        const arrows = ['↑', '↓', '←', '→'];
+
+        function initGrid() {
+            n = parseInt(document.getElementById('nVal').value);
+            start = null; end = null; walls = []; mode = 'start';
+            isLocked = false;
+            const grid = document.getElementById('grid');
+            grid.style.gridTemplateColumns = `repeat(${n}, var(--cell-size))`;
+            grid.innerHTML = '';
+            updateStatus();
+
+            for (let i = 0; i < n * n; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.dataset.idx = i;
+                cell.onclick = () => handleCellClick(i, cell);
+                grid.appendChild(cell);
+            }
+        }
+
+        function handleCellClick(idx, el) {
+            if (isLocked) return;
+            const r = Math.floor(idx / n), c = idx % n;
+
+            // --- 退回上一步邏輯 ---
+            if (mode === 'end' && el.classList.contains('start')) {
+                // 點擊已設定的起點 -> 取消起點
+                el.classList.remove('start');
+                start = null;
+                mode = 'start';
+            } 
+            else if (mode === 'wall' && el.classList.contains('end')) {
+                // 點擊已設定的終點 -> 取消終點
+                el.classList.remove('end');
+                end = null;
+                mode = 'end';
+            } 
+            else if (mode === 'wall' && el.classList.contains('wall')) {
+                // 點擊已設定的牆壁 -> 取消最後一個牆壁
+                // 注意：這裡我們允許點擊「任何」現有的牆壁來移除它
+                walls = walls.filter(w => !(w[0] === r && w[1] === c));
+                el.classList.remove('wall');
+            }
+            // --- 設定新步驟邏輯 ---
+            else if (mode === 'start') {
+                start = [r, c]; 
+                el.classList.add('start'); 
+                mode = 'end';
+            } 
+            else if (mode === 'end') {
+                if (el.classList.contains('start')) return;
+                end = [r, c]; 
+                el.classList.add('end'); 
+                mode = 'wall';
+            } 
+            else if (mode === 'wall' && walls.length < n - 2) {
+                if (el.classList.contains('start') || el.classList.contains('end')) return;
+                walls.push([r, c]); 
+                el.classList.add('wall');
+            }
+
+            updateStatus();
+        }
+
+        function updateStatus() {
+            const statusEl = document.getElementById('status');
+            if (mode === 'start') {
+                statusEl.innerText = "目前選取：設定起點 (綠色)";
+            } else if (mode === 'end') {
+                statusEl.innerText = "目前選取：設定終點 (紅色)，或點擊起點取消";
+            } else if (mode === 'wall') {
+                let remaining = (n - 2) - walls.length;
+                if (remaining > 0) {
+                    statusEl.innerText = `設定障礙物 (剩 ${remaining} 個)，點擊終點或障礙物取消`;
+                } else {
+                    statusEl.innerText = "設定完成！請點擊計算按鈕";
+                }
+            }
+        }
+
+        async function sendData() {
+            if (!start || !end) {
+                return alert(`請完成起點與終點設定！`);
+            }
+            const res = await fetch('/calculate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({n, start, end, walls})
+            });
+            const result = await res.json();
+            isLocked = true;
+            displayResults(result);
+        }
+
+        function displayResults(data) {
+            const cells = document.querySelectorAll('.cell');
+            
+            cells.forEach((cell, i) => {
+                const r = Math.floor(i / n);
+                const c = i % n;
+                
+                // 取得該格的策略與價值
+                const arrowIcon = arrows[data.policy[r][c]];
+                const value = data.v[r][c].toFixed(1);
+                
+                // 使用 innerHTML 更新，並加入一個容器確保樣式整齊
+                cell.innerHTML = `
+                    <div style="pointer-events: none; z-index: 10; text-align: center;">
+                        <div class="arrow" style="font-size: 20px; line-height: 1;">${arrowIcon}</div>
+                        <div style="font-size: 11px; font-weight: bold;">${value}</div>
+                    </div>
+                `;
+                
+                // 額外處理：如果背景太深（如紅色或灰色），讓文字變白色
+                if (cell.classList.contains('end') || cell.classList.contains('wall') || cell.classList.contains('start')) {
+                    cell.style.color = "white";
+                } else {
+                    cell.style.color = "black";
+                }
+            });
+            
+            alert("計算完成！策略與價值已更新至網格。");
+        }
+
+        initGrid();
+    </script>
+</body>
+</html>
